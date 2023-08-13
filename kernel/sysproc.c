@@ -95,3 +95,20 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_trace(void)
+{
+  // printf("sys_trace:hello");
+  // return 0;
+  
+  int mask;
+  //获取追踪的mask
+  if(argint(0, &mask) < 0)
+    return -1;
+  //将mask保存在本进程的proc中
+  struct proc *cur_proc = myproc(); // 进行系统调用的这个进程
+  cur_proc->trace_mask = mask;
+  return 0;
+
+}
