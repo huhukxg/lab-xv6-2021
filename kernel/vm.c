@@ -432,3 +432,30 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+//参数是页表和递归深度
+void vmprint(pagetable_t pagetable,uint64 depth) {
+  if(depth >2){
+    return;
+  }
+  if(depth == 0){
+     printf("page table %p\n", pagetable);
+  }
+  
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    // 如果该条目有效则打印
+    if(pte & PTE_V){
+      pagetable_t child = (pagetable_t)PTE2PA(pte);
+
+      if(depth == 0) printf("..");
+      if(depth == 1) printf(".. ..");
+      if(depth == 2) printf(".. .. ..");
+      printf("%d: pte %p pa %p\n", i, pte, child);
+        
+      // 该PTE指向下一级页表则继续向下遍历
+      if((pte & (PTE_R | PTE_W | PTE_X)) == 0)
+        vmprint(child, depth+1);
+    }
+  }
+}
+
