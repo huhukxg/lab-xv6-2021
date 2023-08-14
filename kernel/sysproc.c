@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -94,4 +95,30 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+
+uint64 
+sys_trace(){
+  int mask;
+  if(argint(0, &mask) < 0){
+    //从用户态读取第 0 个 32 位的数据
+    return - 1;
+  }
+  struct proc *cur_proc = myproc(); // 进行系统调用的这个进程
+  cur_proc->trace_mask = mask;
+  return 0;
+}
+
+uint64 
+sys_sysinfo(void){
+  // uint64 addr;
+  // if(argaddr(0,&addr) <0){
+  //   return -1;
+  // }
+  // struct sysinfo info;
+  // info.freemem = get_free_mem();//获得空闲内存的大小
+  // info.nproc = get_proc_num();
+  //这里有错误
+  return 0;
 }

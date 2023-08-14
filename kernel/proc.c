@@ -164,6 +164,8 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  p->trace_mask = 0;
 }
 
 // Create a user page table for a given process,
@@ -294,7 +296,7 @@ fork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
-
+  np->trace_mask = p->trace_mask;
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
@@ -654,3 +656,20 @@ procdump(void)
     printf("\n");
   }
 }
+
+
+uint64
+get_proc_num(void){
+  struct proc* cur_proc;
+  //proc 是一个数组，定义为：struct proc proc[NPROC];
+  uint ret = 0;
+
+  for(cur_proc = proc; cur_proc < &proc[NPROC]; cur_proc++){
+    acquire(&cur_proc->lock);
+    if(cur_proc->state != UNUSED)
+      ret++; // 如果这个进程是正在使用的
+    release(&cur_proc->lock);
+  }
+  return ret;
+}
+
