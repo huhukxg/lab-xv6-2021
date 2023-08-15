@@ -137,10 +137,11 @@ printfinit(void)
 void
 backtrace(void)
 {
-  printf("backtrace: ");
-  uint64 fp_address = r_fp();
-  while(fp_address != PGROUNDDOWN(fp_address)) {
-    printf("%p\n", *(uint64*)(fp_address-8));
-    fp_address = *(uint64*)(fp_address - 16);
+  printf("backtrace:\n");
+  uint64 fp = r_fp();
+  uint64 base = PGROUNDUP(fp);
+  while(fp < base) {
+    printf("%p\n", *((uint64*)(fp - 8)));
+    fp = *((uint64*)(fp - 16));
   }
 }
