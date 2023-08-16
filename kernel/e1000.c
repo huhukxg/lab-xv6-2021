@@ -103,7 +103,6 @@ e1000_transmit(struct mbuf *m)
   // a pointer so that it can be freed after sending.
   //
   acquire(&e1000_lock);
-
   uint32 idx = regs[E1000_TDT];
   struct tx_desc* desc = &tx_ring[idx];
 
