@@ -67,7 +67,7 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((r_scause() == 15 || r_scause() == 13) && iscowpage(r_stval())){
+  } else if((r_scause() == 15) && iscowpage(r_stval())){
     startcowcopy(r_stval());
   } else if((which_dev = devintr()) != 0){
     // ok
