@@ -5,9 +5,11 @@ struct buf {
   uint blockno;
   struct sleeplock lock;
   uint refcnt;
-  uint lastuse; // *newly added, used to keep track of the least-recently-used buf
+  // struct buf *prev; // LRU cache list
   struct buf *next;
   uchar data[BSIZE];
+
+  uint timestamp;
 
 };
 

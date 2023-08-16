@@ -97,7 +97,7 @@ kalloc(void)
       if(i == id)
         continue;
 
-      /** 尝试偷一个其他 CPU 的空闲 page */
+      /** 拿一个其他 CPU 的空闲 page */
       acquire(&kmems[i].lock);
       if(!kmems[i].freelist) {
         release(&kmems[i].lock);
@@ -112,7 +112,7 @@ kalloc(void)
   }
   release(&kmems[id].lock);
 
-  /** 有一种可能：第id个CPU没有空闲 page ，也没偷到 */
+  /** 第id个CPU没有空闲 page ，也没拿到 */
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
