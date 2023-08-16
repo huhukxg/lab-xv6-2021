@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+extern pte_t* walk(pagetable_t, uint64, int);
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -65,12 +67,8 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if(r_scause() == 15){
-    // page write fault
-    uint64 va = r_stval();
-    if(cowcopy(va) == -1){
-      p->killed = 1;
-    }
+  } else if((r_scause() == 15 || r_scause() == 13) && iscowpage(r_stval())){
+    startcowcopy(r_stval());
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

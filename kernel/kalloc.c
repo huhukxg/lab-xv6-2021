@@ -19,51 +19,34 @@ struct {
   struct run *freelist;
 } kmem;
 
-struct {
-  struct spinlock lock;
-  uint counter[(PHYSTOP - KERNBASE) / PGSIZE];
-} refcnt;
+struct spinlock ref_lock;  // 锁
+int pm_ref[(PHYSTOP - KERNBASE)/PGSIZE];  // 记录物理页的引用计数
 
-inline
+// va映射为idx
 uint64
-pgindex(uint64 pa){
-  return (pa - KERNBASE) / PGSIZE;
-}
-
-inline
-void
-acquire_refcnt(){
-  acquire(&refcnt.lock);
-}
-
-inline
-void
-release_refcnt(){
-  release(&refcnt.lock);
+getRefIdx(uint64 pa){
+  return (pa-KERNBASE)/PGSIZE;
 }
 
 void
-refcnt_setter(uint64 pa, int n){
-  refcnt.counter[pgindex((uint64)pa)] = n;
-}
-
-inline
-uint
-refcnt_getter(uint64 pa){
-  return refcnt.counter[pgindex(pa)];
+refup(void* pa){
+  acquire(&ref_lock);
+  pm_ref[getRefIdx((uint64)pa)] ++;
+  release(&ref_lock);
 }
 
 void
-refcnt_incr(uint64 pa, int n){
-  acquire(&refcnt.lock);
-  refcnt.counter[pgindex(pa)] += n;
-  release(&refcnt.lock);
+refdown(void* pa){
+  acquire(&ref_lock);
+  pm_ref[getRefIdx((uint64)pa)] --;
+  release(&ref_lock);
 }
 
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&ref_lock, "pm_ref");  // 初始化
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -85,28 +68,22 @@ kfree(void *pa)
 {
   struct run *r;
 
-  // page with refcnt > 1 should not be freed
-  acquire_refcnt();
-  if(refcnt.counter[pgindex((uint64)pa)] > 1){
-    refcnt.counter[pgindex((uint64)pa)] -= 1;
-    release_refcnt();
-    return;
-  }
-
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
-  refcnt.counter[pgindex((uint64)pa)] = 0;
-  release_refcnt();
-
-  r = (struct run*)pa;
-
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  acquire(&ref_lock);
+  pm_ref[getRefIdx((uint64)pa)] --;
+  if(pm_ref[getRefIdx((uint64)pa)] <= 0){
+    // Fill with junk to catch dangling refs.
+    memset(pa, 1, PGSIZE);
+    r = (struct run*)pa;
+    acquire(&kmem.lock);
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+    release(&kmem.lock);
+  }
+  
+  release(&ref_lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -123,30 +100,32 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
+  if(r){
     memset((char*)r, 5, PGSIZE); // fill with junk
-
-  if(r)
-    refcnt_incr((uint64)r, 1); // set refcnt to 1
+    pm_ref[getRefIdx((uint64)r)] = 1;  // 初始化不用加锁
+  }
   return (void*)r;
 }
 
-void *
-kalloc_nolock(void)
-{
-  struct run *r;
+void*
+cowcopy_pa(void* pa){
+  acquire(&ref_lock);
+  if(pm_ref[getRefIdx((uint64)pa)] <= 1){
+    release(&ref_lock);
+    return pa;
+  }
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  char* new = kalloc();
+  if(new == 0){
+    release(&ref_lock);
+    panic("out of memory");
+    return 0;
+  }
 
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
-  
-  if(r)
-    refcnt_setter((uint64)r, 1); // set refcnt to 1
+  memmove((void*)new, pa, PGSIZE);
 
-  return (void*)r;
+  // 变更引用计数
+  pm_ref[getRefIdx((uint64)pa)] --;
+  release(&ref_lock);
+  return (void*)new;
 }

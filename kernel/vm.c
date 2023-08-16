@@ -301,7 +301,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
-  pte_t *pte;
+   pte_t *pte;
   uint64 pa, i;
   uint flags;
 
@@ -311,15 +311,20 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
 
-    *pte = ((*pte) & (~PTE_W)) | PTE_COW; // set parent's page unwritable
-    // printf("c: %p %p %p\n", i, ((flags & (~PTE_W)) | PTE_COW), *pte);
-    // map child's page with page unwritable
-    if(mappages(new, i, PGSIZE, (uint64)pa, (flags & (~PTE_W)) | PTE_COW) != 0){
+    // lab5: Copy on write
+    // father
+    // 如果该页本身就不可写，那么子进程肯定也不可写，不用对其考虑COW
+    if(*pte & PTE_W){  
+        *pte &= ~PTE_W;
+        *pte |= PTE_COW;
+    }
+    flags = PTE_FLAGS(*pte);
+    // child
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
-    refcnt_incr(pa, 1);
+    refup((void*)pa);
   }
   return 0;
 
@@ -351,14 +356,13 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if(iscowpage(va0)){                 
+      startcowcopy(va0);                
+      pa0 = walkaddr(pagetable, va0);   
+    } 
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
-
-    if(iscowpage(va0)){                 
-      cowcopy(va0);                
-      pa0 = walkaddr(pagetable, va0);   
-    }  
     
     n = PGSIZE - (dstva - va0);
     if(n > len)
@@ -441,44 +445,6 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 }
 
 int
-cowcopy(uint64 va){
-  va = PGROUNDDOWN(va);
-  pagetable_t p = myproc()->pagetable;
-  pte_t* pte = walk(p, va, 0);
-  uint64 pa = PTE2PA(*pte);
-  uint flags = PTE_FLAGS(*pte);
-
-  if(!(flags & PTE_COW)){
-    printf("not cow\n");
-    return -2; // not cow page
-  }
-
-  acquire_refcnt();
-  uint ref = refcnt_getter(pa);
-  if(ref > 1){
-    // ref > 1, alloc a new page
-    char* mem = kalloc_nolock();
-    if(mem == 0)
-      goto bad;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(p, va, PGSIZE, (uint64)mem, (flags & (~PTE_COW)) | PTE_W) != 0){
-      kfree(mem);
-      goto bad;
-    }
-    refcnt_setter(pa, ref - 1);
-  }else{
-    // ref = 1, use this page directly
-    *pte = ((*pte) & (~PTE_COW)) | PTE_W;
-  }
-  release_refcnt();
-  return 0;
-
-  bad:
-  release_refcnt();
-  return -1;
-}
-
-int
 iscowpage(uint64 va){
   struct proc* p = myproc();
   va = PGROUNDDOWN((uint64)va);
@@ -491,4 +457,26 @@ iscowpage(uint64 va){
     return 1;
   else
     return 0;
+}
+
+void
+startcowcopy(uint64 va){
+  struct proc* p = myproc();
+  va = PGROUNDDOWN((uint64)va);
+  pte_t* pte = walk(p->pagetable,va,0);
+  uint64 pa = PTE2PA(*pte);
+
+  void* new = cowcopy_pa((void*)pa);
+  if((uint64)new == 0){
+    panic("cowcopy_pa err\n");
+    exit(-1);
+  }
+
+  uint64 flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
+  uvmunmap(p->pagetable, va, 1, 0);  // 不包含kfree，因为ref--在cowcopy_pa中已经进行了
+
+  if(mappages(p->pagetable, va, 1, (uint64)new, flags) == -1){
+    kfree(new);
+    panic("cow mappages failed");
+  }
 }
