@@ -81,6 +81,20 @@ struct trapframe {
 };
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+#define NVMA 16
+#define VMA_START (MAXVA / 2)
+struct vma{
+  uint64 start;
+  uint64 end;
+  uint64 length; // 0 means vma not used
+  uint64 off;
+  int permission;
+  int flags;
+  struct file *file;
+  struct vma *next;
+
+  struct spinlock lock;
+};
 
 // Per-process state
 struct proc {
@@ -92,7 +106,7 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
-
+  struct vma *vma;
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process
 

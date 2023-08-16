@@ -29,6 +29,16 @@ struct spinlock wait_lock;
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
+static void
+wakeup1(struct proc *p)
+{
+  if(!holding(&p->lock))
+    panic("wakeup1");
+  if(p->chan == p && p->state == SLEEPING) {
+    p->state = RUNNABLE;
+  }
+}
+
 void
 proc_mapstacks(pagetable_t kpgtbl) {
   struct proc *p;
@@ -289,6 +299,8 @@ fork(void)
   }
   np->sz = p->sz;
 
+  np->parent = p;
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -305,18 +317,37 @@ fork(void)
 
   pid = np->pid;
 
-  release(&np->lock);
-
-  acquire(&wait_lock);
-  np->parent = p;
-  release(&wait_lock);
-
-  acquire(&np->lock);
   np->state = RUNNABLE;
+
+  np->vma = 0;
+  struct vma *pv = p->vma;
+  struct vma *pre = 0;
+  while(pv){
+    struct vma *vma = vma_alloc();
+    vma->start = pv->start;
+    vma->end = pv->end;
+    vma->off = pv->off;
+    vma->length = pv->length;
+    vma->permission = pv->permission;
+    vma->flags = pv->flags;
+    vma->file = pv->file;
+    filedup(vma->file);
+    vma->next = 0;
+    if(pre == 0){
+      np->vma = vma;
+    }else{
+      pre->next = vma;
+    }
+    pre = vma;
+    release(&vma->lock);
+    pv = pv->next;
+  }
+
   release(&np->lock);
 
   return pid;
 }
+
 
 // Pass p's abandoned children to init.
 // Caller must hold wait_lock.
@@ -344,6 +375,21 @@ exit(int status)
   if(p == initproc)
     panic("init exiting");
 
+  // munmap all mmap vma
+  struct vma* v = p->vma;
+  struct vma* pv;
+  while(v){
+    writeback(v, v->start, v->length);
+    uvmunmap(p->pagetable, v->start, PGROUNDUP(v->length) / PGSIZE, 1);
+    fileclose(v->file);
+    pv = v->next;
+    acquire(&v->lock);
+    v->next = 0;
+    v->length = 0;
+    release(&v->lock);
+    v = pv;
+  }
+
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
@@ -358,20 +404,41 @@ exit(int status)
   end_op();
   p->cwd = 0;
 
-  acquire(&wait_lock);
+  // we might re-parent a child to init. we can't be precise about
+  // waking up init, since we can't acquire its lock once we've
+  // acquired any other proc lock. so wake up init whether that's
+  // necessary or not. init may miss this wakeup, but that seems
+  // harmless.
+  acquire(&initproc->lock);
+  wakeup1(initproc);
+  release(&initproc->lock);
+
+  // grab a copy of p->parent, to ensure that we unlock the same
+  // parent we locked. in case our parent gives us away to init while
+  // we're waiting for the parent lock. we may then race with an
+  // exiting parent, but the result will be a harmless spurious wakeup
+  // to a dead or wrong process; proc structs are never re-allocated
+  // as anything else.
+  acquire(&p->lock);
+  struct proc *original_parent = p->parent;
+  release(&p->lock);
+  
+  // we need the parent's lock in order to wake it up from wait().
+  // the parent-then-child rule says we have to lock it first.
+  acquire(&original_parent->lock);
+
+  acquire(&p->lock);
 
   // Give any children to init.
   reparent(p);
 
   // Parent might be sleeping in wait().
-  wakeup(p->parent);
-  
-  acquire(&p->lock);
+  wakeup1(original_parent);
 
   p->xstate = status;
   p->state = ZOMBIE;
 
-  release(&wait_lock);
+  release(&original_parent->lock);
 
   // Jump into the scheduler, never to return.
   sched();
@@ -653,4 +720,19 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+
+struct vma vma_list[NVMA];
+
+struct vma* vma_alloc(){
+  for(int i = 0; i < NVMA; i++){
+    acquire(&vma_list[i].lock);
+    if(vma_list[i].length == 0){
+      return &vma_list[i];
+    }else{
+      release(&vma_list[i].lock);
+    }
+  }
+  panic("no enough vma");
 }
