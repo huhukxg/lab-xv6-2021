@@ -81,19 +81,16 @@ struct trapframe {
 };
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
-#define NVMA 16
-#define VMA_START (MAXVA / 2)
-struct vma{
-  uint64 start;
-  uint64 end;
-  uint64 length; // 0 means vma not used
-  uint64 off;
-  int permission;
-  int flags;
-  struct file *file;
-  struct vma *next;
 
-  struct spinlock lock;
+#define MAXVMA 16
+struct VMA {
+    uint64 start;  // 起始地址
+    uint64 end;    // 结束地址
+    uint64 length; // 区域的长度
+    int prot;      // 权限
+    int flags;     // MAP_SHARED,MAP_PRIVATE
+    struct file *file; // 对应的文件
+    int offset;    // 可能释放了一个部分, 此时 offset 可能不是 0
 };
 
 // Per-process state
@@ -106,7 +103,7 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
-  struct vma *vma;
+  struct VMA vma[MAXVMA];
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process
 

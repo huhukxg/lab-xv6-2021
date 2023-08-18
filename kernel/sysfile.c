@@ -484,106 +484,164 @@ sys_pipe(void)
   }
   return 0;
 }
-uint64
-sys_mmap(void)
-{
-  uint64 addr;
-  int length, prot, flags, fd, offset;
-  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 || argint(4, &fd) < 0 || argint(5, &offset) < 0){
+uint64 sys_mmap (void){
+  // uint64 addr; // 都为 0
+    int length, prot, flags, fd;
+    // int offset; // 都为 0
+    struct file* f;
+
+    // 获取参数
+    if(argint(1, &length) < 0 || argint(2, &prot) < 0
+       || argint(3, &flags) < 0 || argfd(4, &fd, &f) < 0 ) {
+        return -1;
+    }
+
+    // 如果把只读区域映射为可写的而且是 MAP_SHARED 则直接报错
+    // MAP_PRIVATE 不会写
+    // 有 read-only 测试
+    if(!f->writable && (prot & PROT_WRITE) && (flags & MAP_SHARED))
+        return -1;
+
+    // 找到空闲区域, 找到空闲 VMA
+    struct proc* p = myproc();
+    for(int i = 0; i < MAXVMA; ++i) {
+        struct VMA* v = &(p->vma[i]);
+        if(v->length == 0) {
+            v->length = length;
+            v->start = p->sz;
+            v->prot = prot;
+            v->flags = flags;
+            v->offset = 0;
+            v->file = filedup(f); // 引用计数+1
+            // 地址必须是页对齐的
+            length = PGROUNDUP(length);
+            p->sz += length;
+            v->end = p->sz;
+            return v->start;
+        }
+    }
     return -1;
-  }
-
-  if(addr != 0)
-    panic("mmap: addr not 0");
-  if(offset != 0)
-    panic("mmap: offset not 0");
-
-  struct proc *p = myproc();
-  struct file* f = p->ofile[fd];
-
-  int pte_flag = PTE_U;
-  if (prot & PROT_WRITE) {
-    if(!f->writable && !(flags & MAP_PRIVATE)) return -1; // map to a unwritable file with PROT_WRITE
-    pte_flag |= PTE_W;
-  }
-  if (prot & PROT_READ) {
-    if(!f->readable) return -1; // map to a unreadable file with PROT_READ
-    pte_flag |= PTE_R;
-  }
-
-  struct vma* v = vma_alloc();
-  v->permission = pte_flag;
-  v->length = length;
-  v->off = offset;
-  v->file = myproc()->ofile[fd];
-  v->flags = flags;
-  filedup(f);
-  struct vma* pv = p->vma;
-  if(pv == 0){
-    v->start = VMA_START;
-    v->end = v->start + length;
-    p->vma = v;
-  }else{
-    while(pv->next) pv = pv->next;
-    v->start = PGROUNDUP(pv->end);
-    v->end = v->start + length;
-    pv->next = v;
-    v->next = 0;
-  }
-  addr = v->start;
-  printf("mmap: [%p, %p)\n", addr, v->end);
-
-  release(&v->lock);
-  return addr;
 }
 
-uint64
-sys_munmap(void)
-{
+uint64 sys_munmap (void){
   uint64 addr;
   int length;
-  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0){
+  // 获取参数
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0)
     return -1;
-  }
-
-  struct proc *p = myproc();
-  struct vma *v = p->vma;
-  struct vma *pre = 0;
-  while(v != 0){
-    if(addr >= v->start && addr < v->end) break; // found
-    pre = v;
-    v = v->next;
-  }
-
-  if(v == 0) return -1; // not mapped
-  printf("munmap: %p %d\n", addr, length);
-  if(addr != v->start && addr + length != v->end) panic("munmap middle of vma");
-
-  if(addr == v->start){
-    writeback(v, addr, length);
-    uvmunmap(p->pagetable, addr, length / PGSIZE, 1);
-    if(length == v->length){
-      // free all
-      fileclose(v->file);
-      if(pre == 0){
-        p->vma = v->next; // head
-      }else{
-        pre->next = v->next;
-        v->next = 0;
+  struct proc* p = myproc();
+  for(int i = 0; i < MAXVMA; ++i) {
+    struct VMA* v = &(p->vma[i]);
+    // 左闭右开
+    if(v->length != 0 && addr < v->end && addr >= v->start) {
+      int should_close = 0;
+      int offset = v->offset;
+      addr = PGROUNDDOWN(addr);
+      length = PGROUNDUP(length);
+      // 是否从 start 开始
+      if(addr == v->start) {
+        // 是否释放整个文件
+        if(length == v->length) {
+          v->length = 0;
+          // 不能在这个时候释放, 得在写回之后
+          should_close = 1;
+        } else {
+          v->start += length;
+          v->length -= length;
+          v->offset += length;
+        }
+      } else {
+        // 根据要求这个时候只能是释放到结尾
+        v->length -= length;
       }
-      acquire(&v->lock);
-      v->length = 0;
-      release(&v->lock);
-    }else{
-      // free head
-      v->start -= length;
-      v->off += length;
-      v->length -= length;
+      // 处理 MAP_SHARED
+      if(v->flags & MAP_SHARED) {
+        // 一种简单的实现就是直接把整个文件写回去
+        // !!!!(不行, 可能现在的映射已经不是整个文件)
+        filewrite_offset(v->file, addr, length, offset);
+      }
+      // 解除映射
+      // 这里还有些问题, 可能并没有映射
+      // if(walkaddr(p->pagetable, addr) != 0)
+      uvmunmap(p->pagetable, addr, length/PGSIZE, 1);
+      if(should_close)
+        fileclose(v->file);
     }
-  }else{
-    // free tail
-    v->length -= length;
-    v->end -= length;
   }
   return 0;
+}
+
+
+int map_mmap(struct proc *p, uint64 addr) {
+    // 遍历 vma 找到具体的文件
+    for(int i = 0; i < MAXVMA; ++i) {
+        struct VMA* v = &(p->vma[i]);
+        // 左闭右开
+        if(v->length != 0 && addr < v->end && addr >= v->start) {
+            uint64 start = PGROUNDDOWN(addr);
+            // uint64 end = PGROUNDUP(addr);
+            // 可能释放了一部分, 但是后面部分没有建立映射(offset)
+            uint64 offset = start - v->start + v->offset;
+
+            // 申请一块空间
+            char* mem = kalloc();
+            if(!mem) {
+                return 0;
+            }
+            memset(mem, 0, PGSIZE);
+
+            // PROT_NONE       0x0   PTE_V (1L << 0)
+            // PROT_READ       0x1   PTE_R (1L << 1)
+            // PROT_WRITE      0x2   PTE_W (1L << 2)
+            // PROT_EXEC       0x4   PTE_X (1L << 3)
+            //                       PTE_U (1L << 4)
+            // 建立映射关系
+            if(mappages(p->pagetable, start, PGSIZE,
+                        (uint64)mem, (v->prot<<1)|PTE_U) != 0
+              ){
+                kfree(mem);
+                return 0;
+            }
+
+            // 读取文件
+            ilock(v->file->ip);
+            // 1 表示虚拟地址
+            readi(v->file->ip, 1, start, offset, PGSIZE);
+            iunlock(v->file->ip);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int
+    filewrite_offset(struct file *f, uint64 addr, int n, int offset) {
+    int r, ret = 0;
+    if(f->writable == 0)
+        return -1;
+    if(f->type != FD_INODE) {
+        panic("filewrite: only FINODE implemented!");
+    }
+
+    int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+    int i = 0;
+    while(i < n) {
+        int n1 = n - i;
+        if(n1 > max)
+            n1 = max;
+
+        begin_op();
+        ilock(f->ip);
+        if ((r = writei(f->ip, 1, addr + i, offset, n1)) > 0)
+            offset += r;
+        iunlock(f->ip);
+        end_op();
+
+        if(r != n1) {
+            break;
+        }
+        i += r;
+    }
+    ret = (i == n ? n : -1);
+    return ret;
 }

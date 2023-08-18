@@ -144,6 +144,11 @@ int             fetchstr(uint64, char*, int);
 int             fetchaddr(uint64, uint64*);
 void            syscall();
 
+//sysfile.c
+int map_mmap(struct proc*, uint64);
+int filewrite_offset(struct file *, uint64, int, int);
+
+
 // trap.c
 extern uint     ticks;
 void            trapinit(void);
@@ -176,7 +181,6 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 
-int             mmap_handler(uint64 va, int scause);
 
 // plic.c
 void            plicinit(void);
