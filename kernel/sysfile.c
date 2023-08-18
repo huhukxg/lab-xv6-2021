@@ -556,13 +556,9 @@ uint64 sys_munmap (void){
       }
       // 处理 MAP_SHARED
       if(v->flags & MAP_SHARED) {
-        // 一种简单的实现就是直接把整个文件写回去
-        // !!!!(不行, 可能现在的映射已经不是整个文件)
         filewrite_offset(v->file, addr, length, offset);
       }
       // 解除映射
-      // 这里还有些问题, 可能并没有映射
-      // if(walkaddr(p->pagetable, addr) != 0)
       uvmunmap(p->pagetable, addr, length/PGSIZE, 1);
       if(should_close)
         fileclose(v->file);
@@ -589,12 +585,6 @@ int map_mmap(struct proc *p, uint64 addr) {
                 return 0;
             }
             memset(mem, 0, PGSIZE);
-
-            // PROT_NONE       0x0   PTE_V (1L << 0)
-            // PROT_READ       0x1   PTE_R (1L << 1)
-            // PROT_WRITE      0x2   PTE_W (1L << 2)
-            // PROT_EXEC       0x4   PTE_X (1L << 3)
-            //                       PTE_U (1L << 4)
             // 建立映射关系
             if(mappages(p->pagetable, start, PGSIZE,
                         (uint64)mem, (v->prot<<1)|PTE_U) != 0
