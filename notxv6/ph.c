@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include <sys/time.h>
 
-#define NBUCKET 5
+#define NBUCKET 13
 #define NKEYS 100000
 
 struct entry {
